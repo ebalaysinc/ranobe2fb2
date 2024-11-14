@@ -1,0 +1,8 @@
+.venv
+**/__pycache__
+.vscode
+*.fb2
+*.xml
+dist/*
+!dist/.gitkeep
+logs/*
