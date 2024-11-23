@@ -14,20 +14,19 @@ from utils import *
 just_fix_windows_console()
 log = Logger('RanobeLIB')
 
-def ranobelib_main(url, filename): #Точка входа
-    slug = re.search(r"(?<=book/)[^?]+", url) # Парсим slug
+def ranobelib_main(url, filename): #Entry point
+    slug = re.search(r"(?<=book/)[^?]+", url) # Parsing slug
 
     if slug:
         slug = slug.group(0)
         log.write(f"Parsed slug: {slug}")
 
-        session = requests.Session()
-        headers = {'User-Agent': USER_AGENT, 'Host': 'api.mangalib.me'}
-        response = session.get(f"https://api.mangalib.me/api/manga/{slug}?fields[]=summary&fields[]=releaseDate&fields[]=authors",
-                                headers=headers)
+        response = get_request(f"https://api.mangalib.me/api/manga/{slug}?fields[]=summary&fields[]=releaseDate&fields[]=authors")
         log.write(f'Request sended to RanobeLIB API. Status code: {response.status_code}.')
 
         if response.ok:
+            # Creating a base
+
             xml = create_root_xml()
             images = {}
 
@@ -40,7 +39,9 @@ def ranobelib_main(url, filename): #Точка входа
                 'annotation': json['summary']
             }
             
-            chapters, volumes = get_all_chapters(slug)
+            chapters, volumes = get_all_chapters(slug) # Getting all chapters
+
+            # Printing info
 
             print(Style.DIM + "/"*50 + Style.RESET_ALL)
             print(f"""{Fore.YELLOW}Name: {Style.RESET_ALL}{title_info['book-title']}
@@ -49,45 +50,29 @@ def ranobelib_main(url, filename): #Точка входа
 {Fore.YELLOW}Summary: {Style.RESET_ALL}{title_info['annotation']}""")
             print(Style.DIM + "/"*50 + Style.RESET_ALL)
 
+            # Volume selector
+
             selected_volumes = input(Fore.YELLOW
                             + 'Enter specific volumes in format "1, 3, 5-7, 9" (or skip if you don\'t care): '
                             + Style.RESET_ALL)
             
-            if selected_volumes != "":
+            if selected_volumes != "": # If volume selected
                 selected_volumes = parse_selected_volumes(selected_volumes)
 
                 if all(volume in volumes for volume in selected_volumes):
                     chapters = filter_volumes(chapters, selected_volumes)
                     title_info['book-title'] = title_info['book-title'] + format_volumes(selected_volumes)
+                
                 else:
                     error_message('One of selected volumes doesn\'t exist. Aborting.')
                     return
-            #TODO: скачивание отдельных томов
+
 
             print('Parsing chapters...')
-            content, chapter_images = get_content(slug, chapters, [], {})
+            content, chapter_images = get_content(slug, chapters)
 
-            for i in chapter_images.keys():
-                try:
-                    print(Fore.YELLOW +
-                          f'Downloading image {i} ({list(chapter_images.keys()).index(i) + 1}/{len(chapter_images.keys())})' +
-                          Style.RESET_ALL, end=' '*40 + '\r')
-
-                    request = requests.get(chapter_images[i])
-
-                    if request.status_code == 429:
-                        time_to_sleep = int(response.headers['retry-after']) + 2
-                        print(Fore.YELLOW + f'429 Error, waiting {time_to_sleep} seconds' + Style.RESET_ALL, end=' '*15 + '\r')
-                        time.sleep(time_to_sleep)
-                        request = requests.get(chapter_images[i])
-
-                    if request.ok: images[i] = base64.b64encode(request.content).decode('utf-8')
-                    else:
-                        print('\n' + Fore.RED + f'{chapter_images[i]} returned {request.status_code}. Skipped' + Style.RESET_ALL)
-                except:
-                    print('\n' + Fore.RED + f'{chapter_images[i]} can\'t be parsed. Skipped' + Style.RESET_ALL)
-
-            images['cover.jpg'] = base64.b64encode(requests.get(json['cover']['default']).content).decode('utf-8')
+            # Downloading all images
+            images = download_images(chapter_images, json['cover']['default'])
 
             print('\nCleaning content...')
             content = clean_content(content)
@@ -110,16 +95,21 @@ def ranobelib_main(url, filename): #Точка входа
             error_message('Bad status code. Aborting.')
             return
 
-    else: #если slug нельзя спарсить
+    else: #if there no slug
         error_message("Slug can't be parsed. Probably bad link. Aborting.")
         return
 
-def get_all_chapters(slug):
-    session = requests.Session()
-    headers = {'User-Agent': USER_AGENT, 'Host': 'api.mangalib.me'}
-    response = session.get(f"https://api.mangalib.me/api/manga/{slug}/chapters",
-                            headers=headers)
-    
+def get_all_chapters(slug: str):
+    """
+    Getting all chapters
+
+    Args:
+        slug (str): slug
+    Returns:
+        chapters (List[List[str]]):
+        volumes (List[str]):
+    """
+    response = get_request(f"https://api.mangalib.me/api/manga/{slug}/chapters")
     json = response.json()['data']
 
     log.write(f'Parsed all chapters. Count: {len(json)}')
@@ -134,10 +124,18 @@ def get_all_chapters(slug):
         f'{i[0]}.{i[1]} - {i[2]}' for i in chapters
     ]))
 
-    return chapters, sorted(set(str(i['volume']) for i in json))
+    return chapters, sorted(set(str(i['volume']) for i in json), key=int)
 
-def parse_images_from_content(content):
-    if type(content) != str: return {}
+def parse_images_from_content(content) -> Mapping[str, str]:
+    """
+    Parsing images from content
+
+    Args:
+        content (str): HTML content
+    Returns:
+        Mapping[str, str]
+    """
+    if type(content) != str: return {} # If not HTML
 
     soup = BeautifulSoup(content, 'html.parser')
     images = soup.find_all('img')
@@ -149,107 +147,143 @@ def parse_images_from_content(content):
     
     return img
 
-def parse_content(response, i, chapter_content, chapter_images):
-    json = response.json()['data']
+def parse_content(data: Mapping, chapter: List[str], chapter_content, chapter_images):
+    """
+    Parsing content into XML
 
-    if type(json['content']) == str:
-        chapter_content.append(json['content'])
+    Args:
+        data (Mapping): response from server
+        chapter (List[str]): info about chapter
+    Returns:
+        chapter_content (List[str]):
+        (Mapping[str: str]):
+    """
+
+    if type(data['content']) == str: # If HTML
+        chapter_content.append(data['content'])
     else:
-        chapter_content.append(convert_json_to_html(json['content']))
+        chapter_content.append(convert_json_to_html(data['content']))
 
-    for k in json['attachments']:
+    for k in data['attachments']:
         chapter_images[k['filename']] = "https://ranobelib.me" + k['url']
     
-    img = parse_images_from_content(json['content'])
+    img = parse_images_from_content(data['content'])
 
-    log.write(f"{i[0]}.{i[1]} parsed. Current chapter contents count: {len(chapter_content)}")
+    log.write(f"{chapter[0]}.{chapter[1]} parsed. Current chapter contents count: {len(chapter_content)}")
 
     return chapter_content, {**chapter_images, **img}
 
-def get_content(slug, chapters, chapter_content, chapter_images):
-    session = requests.Session()
-    headers = {'User-Agent': USER_AGENT, 'Host': 'api.mangalib.me'}
+def get_content(slug: str, chapters: List[List[str]]):
+    """
+    Getting content from chapters
+    
+    Args:
+        slug (str): slug
+        chapters (List[List[str]]): chapters to get content
+    Returns:
+        chapter_content (List[str]):
+        chapter_images (Mapping[str]):
+    """
+
+    chapter_content, chapter_images = [], {}
+
     for i in chapters:
-        try:
-            print(Fore.YELLOW +
-                  f'Parsing chapter {i[0]}.{i[1]}. {i[2]} ({chapters.index(i)+1}/{len(chapters)})'
-                  + Style.RESET_ALL, end=' '* 50 + '\r')
-            response = session.get(f"https://api.mangalib.me/api/manga/{slug}/chapter?number={i[1]}&volume={i[0]}",
-                       headers=headers)
-            chapter_content, chapter_images = parse_content(response, i,
-                          chapter_content, chapter_images)
-        except Exception as e:
+        print(Fore.YELLOW +
+              f'Parsing chapter {i[0]}.{i[1]}. {i[2]} ({chapters.index(i)+1}/{len(chapters)})'
+              + Style.RESET_ALL, end=' '* 50 + '\r')
+        
+        response = get_request(f"https://api.mangalib.me/api/manga/{slug}/chapter?number={i[1]}&volume={i[0]}")
+
+        if response.status_code == 429:
             time_to_wait = int(response.headers['retry-after']) + 2
+
             print(Fore.YELLOW + f'429 Error, waiting {time_to_wait} seconds' + Style.RESET_ALL, end=' '*40   + '\r')
             log.write(f'429 Error. Retrying after ' + str(time_to_wait) + " seconds.")
             time.sleep(time_to_wait)
 
-            response = session.get(f"https://api.mangalib.me/api/manga/{slug}/chapter?number={i[1]}&volume={i[0]}",
-                       headers=headers)
-            chapter_content, chapter_images = parse_content(response, i,
-                          chapter_content, chapter_images)
+            response = get_request(f"https://api.mangalib.me/api/manga/{slug}/chapter?number={i[1]}&volume={i[0]}")
+        
+        chapter_content, chapter_images = parse_content(response.json()['data'], i,
+                                                        chapter_content, chapter_images)
+        
 
     log.write(f'All chapters successfully parsed. Contents: {len(chapter_content)}. Images: {len(chapter_images)}')
     print() #because end=\r
     return chapter_content, chapter_images
 
-def clean_content(contents):
+def clean_content(contents: List[str]) -> List[str]:
+    """
+    Converting HTML into XML by cleaning it from some things
+
+    Args:
+        contents (List[str]): list of contents
+    Returns:
+        List[str]: list of cleaned content
+    """
+
     cleaned_content = []
 
     for i in contents:
         soup = BeautifulSoup(i, 'html.parser')
-        for k in soup.find_all('p'): # Удаление лишних атрибутов
+
+        for k in soup.find_all('p'): # Deleting extra tags
             if 'data-paragraph-index' in k.attrs:
                 del k.attrs['data-paragraph-index']
 
-        for l in soup.find_all('img'): # Замена img на image и изменение l:href
-
-            if l.attrs != None and l.attrs['src'] != "": #Если img по каким-то причинам пуст, то скипаем
+        for l in soup.find_all('img'): # Replacing img to image and changing parent and l:href
+            if l.attrs != None and l.attrs['src'] != "": #Skip if img somewhy don't have src
                 image = soup.new_tag('image', attrs={'l:href': '#' + re.search(r"[^/]+\.\w+$", l.attrs['src']).group()})
                 parent = l.parent
 
-                if type(parent) == BeautifulSoup: #если глава состоит из одних картинок, <p></p> отсутствует, и родителем является BeautifulSoup
+                # If there no <p> and only images with BeautifulSoup parent
+                if type(parent) == BeautifulSoup: 
                     l.decompose()
                     parent.append(image)
-
                 else:
                     parent.insert_before(image)
-
                     parent.decompose()
 
-        for e in soup.findAll('br'): # Замена br на empty-line
+        for e in soup.findAll('br'): # Changing br to empty-line
             e.name = 'empty-line'
 
         cleaned_content.append(str(soup))
     
     return cleaned_content
 
-def convert_json_to_html(content):
-    soup = BeautifulSoup()
+def convert_json_to_html(content: Mapping) -> str:
+    """
+    Converting JSON Content to HTML
+
+    Args:
+        content (Mapping): content
+    Returns:
+        str: HTML
+    """
+
+    soup = BeautifulSoup() # Creating root
 
     for i in content['content']:
-        if i['type'] == 'paragraph':
+        if i['type'] == 'paragraph': # If paragraph
             p = soup.new_tag('p')
 
-            if 'content' in i.keys():
+            if 'content' in i.keys(): # If it have content
                 text = i['content'][0]
-                if 'marks' in text.keys():
+                if 'marks' in text.keys(): # Checking for marks
                     edited_p = p
                     for k in text['marks']:
-                        if k['type'] == 'bold':
-                            element = soup.new_tag('b')
-                        if k['type'] == 'italic':
-                            element = soup.new_tag('i')
+
+                        if k['type'] == 'bold': element = soup.new_tag('b')
+                        if k['type'] == 'italic': element = soup.new_tag('i')
                             
                         edited_p.append(element)
                         edited_p = element
                     edited_p.string = i['content'][0]['text']
-                else:
-                    p.string = i['content'][0]['text']
+                
+                else: p.string = i['content'][0]['text']
 
             soup.append(p)
-        else:
-            if 'attrs' in i.keys() and 'images' in i['attrs'].keys():
+        else: # If image (or something else)
+            if 'attrs' in i.keys() and 'images' in i['attrs'].keys(): #If it have image
                 image = soup.new_tag('image')
                 image.attrs['l:href'] = '#' + i['attrs']['images'][0]['image'] + '.jpg'
 
@@ -258,3 +292,41 @@ def convert_json_to_html(content):
                 soup.append(soup.new_tag('p'))
     
     return str(soup)
+
+def download_images(chapter_images: List[str], cover: str) -> Mapping[str, str]:
+    """
+    Downloading all images from chapter_images and converting it into Base64
+
+    Args:
+        chapter_images (List[str]): list of images
+        cover (str): link to the book cover
+    Returns:
+        Mapping[str, str]: dictionary of image names and images
+    """
+    images = {}
+
+    for i in chapter_images.keys():
+        try:
+            print(Fore.YELLOW +
+                    f'Downloading image {i} ({list(chapter_images.keys()).index(i) + 1}/{len(chapter_images.keys())})' +
+                    Style.RESET_ALL, end=' '*40 + '\r')
+
+            request = get_request(chapter_images[i])
+
+            if request.status_code == 429:
+                time_to_sleep = int(request.headers['retry-after']) + 2
+                print(Fore.YELLOW + f'429 Error, waiting {time_to_sleep} seconds' + Style.RESET_ALL, end=' '*15 + '\r')
+                time.sleep(time_to_sleep)
+
+                request = get_request(chapter_images[i])
+
+            if request.ok: images[i] = base64.b64encode(request.content).decode('utf-8')
+            else:
+                print('\n' + Fore.RED + f'{chapter_images[i]} returned {request.status_code}. Skipped\n' + Style.RESET_ALL)
+        
+        except Exception as e:
+            print('\n' + Fore.RED + f'{chapter_images[i]} can\'t be parsed. Skipped\n' + Style.RESET_ALL)
+
+    images['cover.jpg'] = base64.b64encode(get_request(cover).content).decode('utf-8')
+    
+    return images

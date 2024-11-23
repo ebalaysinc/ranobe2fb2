@@ -6,3 +6,4 @@
 dist/*
 !dist/.gitkeep
 logs/*
+!logs/.gitkeep

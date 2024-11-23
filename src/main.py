@@ -3,10 +3,10 @@ from colorama import Fore, Back, Style, just_fix_windows_console
 
 from services.ranobelib import ranobelib_main
 
-# Список сервисов
-# name - отображаемое имя
-# regex - регулярка для ссылки
-# function - точка входа
+# List of services
+# name - display name
+# regex - regular expression for searching link
+# function - entry point
 services = [
     {'name': 'RanobeLIB', 'regex': 'ranobelib.me', 'function': ranobelib_main}
 ]
@@ -20,7 +20,8 @@ for i in services:
         print(Fore.GREEN + 'Service found: ' + i['name'])
         filename = input(Fore.YELLOW + 'Enter filename: ' + Style.RESET_ALL)
 
-        i['function'](query, filename) #!!! Входная функция всегда принимает ссылку и название файла
+        #!!! Entry point always takes the link and the file name
+        i['function'](query, filename)
         break
 
 else:
