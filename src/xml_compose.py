@@ -46,3 +46,21 @@ def create_images(root, images):
         bin.text = images[i]
         log.write(f'Saved image {i}')
     return root
+
+def create_body(root: ET.Element, content, chapters, t_info):
+    body = ET.SubElement(root, 'body')
+    title = ET.SubElement(body, 'title')
+    ET.SubElement(title, 'p').text = t_info["book-title"]
+
+    for i in range(len(content)):
+        section = ET.SubElement(body, 'section')
+        section_title = f'{chapters[i][0]}.{chapters[i][1]}. {chapters[i][2]}'
+        ET.SubElement(ET.SubElement(section, 'title'), 'p').text = section_title
+
+        text = ET.ElementTree(ET.fromstring("<root xmlns:l=\"http://www.w3.org/1999/xlink\">" + content[i] + "</root>")).getroot()
+        for element in text:
+            section.append(element)
+
+        log.write('Section created: ' + section_title)
+
+    return root
